@@ -1,0 +1,26 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Secrets — .env.example IS tracked, real .env files are not
+.env
+.env.*
+!.env.example
+
+# dbt
+target/
+dbt_packages/
+logs/
+profiles.yml
+
+# Source data — the loader downloads it; raw extracts don't belong in git
+data/*
+!data/.gitkeep
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
