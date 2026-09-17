@@ -2,6 +2,10 @@ name: fastmarkets
 version: "1.0.0"
 config-version: 2
 
+# Pinned for the same reason the Python dependencies are pinned: a
+# reviewer running this later should get the behaviour it was built on.
+require-dbt-version: [">=1.12.0", "<1.13.0"]
+
 profile: fastmarkets
 
 model-paths: ["models"]

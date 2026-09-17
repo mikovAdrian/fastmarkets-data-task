@@ -6,7 +6,8 @@ lands it in a Snowflake raw layer with the nested `order_items` array stored as
 product sales with a revenue-based top-seller flag.
 
 Verified end to end against a Snowflake trial: 1,000 orders, 1,674 line items,
-1,000 customers, 424 aggregate rows across 144 weeks, 93 tests passing.
+1,000 customers, 424 aggregate rows across 144 weeks, 95 dbt tests and 24
+loader unit tests passing.
 
 ## Stack
 
@@ -18,8 +19,10 @@ Verified end to end against a Snowflake trial: 1,000 orders, 1,674 line items,
 ## Repository layout
 
     load/          Python extract-and-load script and its pinned dependencies
+    load/tests/    unit tests for the loader (no credentials, no network)
     dbt_project/   dbt transformation project (staging -> marts)
     data/          local working directory for the extract (gitignored)
+    .github/       CI running the loader's unit tests
 
 ## Setup
 
@@ -96,6 +99,21 @@ inside the Python process; `env_var()` in `profiles.yml` reads the real
 environment. Sourcing `.env` first bridges the two. Quote any value containing
 shell metacharacters, or `source` will interpret them.
 
+`dbt_project.yml` pins `require-dbt-version: [">=1.12.0", "<1.13.0"]` for the
+same reason the Python dependencies are pinned: a reviewer running this later
+should get the behaviour it was built on.
+
+### Loader unit tests
+
+    pip install -r load/requirements-dev.txt
+    pytest load/tests -q
+
+24 tests against a fake HTTP response and a fake Snowflake connection, so they
+need no credentials and no network. They cover the parsing rules, the audit
+columns, the statement ordering inside `load()` and the CLI exit codes. CI runs
+them on every push; the dbt models are not built in CI because that needs live
+warehouse credentials.
+
 ## Data model
 
 ### Raw layer
@@ -106,8 +124,14 @@ the nested array stays queryable in place. Typing and validation are staging
 concerns - the raw layer records what arrived.
 
 Two audit columns are added on load: `_loaded_at`, the UTC load timestamp, and
-`_source_row_hash`, a SHA-256 of the business columns so monitoring can detect
-the same `order_id` arriving with different content between runs.
+`_source_row_hash`, a SHA-256 of the business columns.
+
+To be precise about the hash: **nothing consumes it yet.** It is carried through
+to `fct_order` but no model or test reads it, and under full-snapshot reload it
+could not do the job it is named for - comparing runs requires keeping the
+previous state, which reloading discards. It exists as the mechanism the
+incremental design under *Going further* needs, and it is more honest to call it
+preparation than an active control.
 
 ### Staging - views
 
@@ -151,6 +175,11 @@ over time.
 This is why the staging models are thin. `quantity * unit_price` is a derived
 measure, so `line_total` is defined in `fct_order_item`; surrogate keys are a
 mart concept for the same reason.
+
+`fct_order` reads `fct_order_item` rather than `stg_order_items` so the
+multiplication is written in exactly one place. A fact reading another fact is a
+dependency worth accepting: the alternative repeats the expression, and the two
+copies would drift the moment a discount or tax term is added to one of them.
 
 ### Load: full-snapshot reload
 
@@ -239,6 +268,12 @@ on quantity.
 The aggregate is a **view**, per the task's instruction and because it is a
 cheap aggregation over an already-materialized fact.
 
+It carries both `line_item_count` and `order_count`. They differ only when a
+product appears on more than one line of the same order, which never happens
+here - **the two columns are identical in all 424 rows.** They are kept separate
+because the distinction is real in a feed that allows it, but on this data one
+of them carries no information.
+
 ### Known environment dependency: `WEEK_START`
 
 `DATE_TRUNC('week', ...)` depends on Snowflake's `WEEK_START` session
@@ -251,12 +286,44 @@ pinned because the reviewer account uses the default.
 
 ## Data quality and testing
 
-93 tests: 7 on the source, 31 on staging, 54 on the marts, plus one singular
-test. All pass.
+95 dbt tests: 7 on the source, 31 on staging, 54 on the marts, plus three
+singular tests. All pass, alongside 24 unit tests for the loader.
 
 Tests cover failure modes that do not occur in this sample, not just the ones
 that do. Production feeds change, and a suite that only encodes today's data
 will not notice tomorrow's regression.
+
+### Two kinds of test, and it matters which is which
+
+A test count on its own is close to meaningless, so it is worth being explicit
+about what these 95 tests actually protect.
+
+**Data guards** can fail when the incoming data changes. `not_null` on
+source-derived columns, `unique` on `order_id` at the source, `quantity > 0`,
+`unit_price >= 0`, `accepted_values` on `product_id`, `has_total_mismatch`, and
+the singular tests asserting every week has a top seller and every order has
+line items. These are the tests that would tell me something new tomorrow.
+
+**Structural guards** cannot fail as the models are written today, because the
+model construction already guarantees them. All six `relationships` tests fall
+into this group: `stg_order_items` is built *from* `stg_orders`, so every
+`order_id` in the child necessarily exists in the parent; `dim_customer` is a
+deduplication of the same source column `fct_order` reads, so an orphan
+customer is not reachable. The same applies to
+`unique_combination_of_columns (week_start, product_id)` on a model whose
+`GROUP BY` is those two columns, to `revenue_rank >= 1` when the column is a
+`RANK()`, and to `accepted_values [true, false]` on native `BOOLEAN` columns.
+
+That is not an argument for deleting them. They are a contract on the shape of
+the model rather than a check on its contents, and they fail exactly when
+someone changes an `INNER JOIN` to a `LEFT JOIN`, drops a `GROUP BY`, or
+re-implements a flag as `'Y'`/`'N'` - refactors that every column-level test
+would otherwise wave through. But claiming "referential integrity is verified"
+would overstate it: referential integrity here is *constructed*, and the tests
+document that construction.
+
+Roughly 20 of the 95 are structural in this sense. The remaining 75 can fail on
+new data.
 
 | Category | Coverage |
 | --- | --- |
@@ -290,9 +357,9 @@ invisible in exactly the case that most deserves attention.
 the three layers. The column detects nothing here and is kept for the feed this
 would become.
 
-### The singular test
+### The singular tests
 
-`tests/assert_each_week_has_a_top_seller.sql` asserts every week with sales has
+**`assert_each_week_has_a_top_seller.sql`** asserts every week with sales has
 at least one product flagged.
 
 No column-level test can catch this. `accepted_values` proves `is_top_seller`
@@ -304,12 +371,31 @@ It tests `COUNT_IF(is_top_seller) = 0`, not `!= 1`. On a genuine tie two
 products rank 1 and the week correctly has two top sellers; a test for exactly
 one would fail precisely when the code works as designed.
 
-### Cross-layer reconciliation
+One limitation worth naming: the week of 2022-12-26 contains a single product,
+which is therefore top seller by default. The flag carries no information for a
+week with one product, and this is not addressed.
 
-`SUM(line_item_count)` in `fct_order` must equal the row count of
-`fct_order_item` - 1,674 - which makes drift between the two facts detectable
-with one query. `_loaded_at`, written by the loader, is carried through to
-`fct_order`, so the marts trace back to the load run that produced them.
+**`assert_every_order_has_line_items.sql`** catches an order that arrives with
+an empty `order_items` array. Such an order survives the load and stays in
+`fct_order` - dropping it would be worse - but contributes nothing to
+`fct_order_item` or the weekly aggregate, so whatever its header total claimed
+disappears from revenue reporting. `has_total_mismatch` would flag it at warn
+severity, which is right for a header-versus-lines disagreement in general but
+too quiet for an order with no lines at all, so this is an error.
+
+**`assert_order_line_counts_reconcile.sql`** asserts that `fct_order`'s
+degenerate measures agree with the line grain they summarise:
+`SUM(line_item_count)` against the row count of `fct_order_item`, and the same
+for quantity and revenue. This is a structural guard in the sense described
+above - `fct_order` derives those measures from `fct_order_item`, so it cannot
+fail today. It fails if either fact's grain changes.
+
+### Lineage
+
+`_loaded_at`, written by the loader, is carried through to `fct_order`, so any
+row in the marts traces back to the load run that produced it. This was
+verified by checking that `MAX(_loaded_at)` is identical in `RAW.ORDERS_RAW`
+and `fct_order` after a full run.
 
 ## Use of AI
 
