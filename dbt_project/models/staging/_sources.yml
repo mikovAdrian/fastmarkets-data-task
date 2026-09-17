@@ -1,0 +1,54 @@
+version: 2
+
+sources:
+  - name: raw
+    database: "{{ env_var('SNOWFLAKE_DATABASE', 'FASTMARKETS') }}"
+    schema: "{{ env_var('SNOWFLAKE_RAW_SCHEMA', 'RAW') }}"
+    description: >
+      Landing zone written by load/load_to_snowflake.py. One row per row of
+      the source CSV, with every business column held as text and the nested
+      order_items array as VARIANT.
+
+    tables:
+      - name: orders_raw
+        description: >
+          Full snapshot of the order extract. Replaced wholesale on each load
+          run, so row counts here reflect the latest extract, not history.
+        columns:
+          - name: order_id
+            description: Order identifier as it arrived, untyped.
+            data_tests:
+              - not_null
+              - unique
+
+          - name: customer_id
+            description: Customer identifier as it arrived, untyped.
+            data_tests:
+              - not_null
+
+          - name: order_date
+            description: Order date as a string; cast in stg_orders.
+            data_tests:
+              - not_null
+
+          - name: order_total
+            description: Header total as a string; cast in stg_orders.
+
+          - name: order_items
+            description: >
+              VARIANT array of line items, each carrying product_id,
+              product_name, quantity and price. Flattened in stg_order_items.
+            data_tests:
+              - not_null
+
+          - name: _source_row_hash
+            description: >
+              SHA-256 of the business columns. Lets a future incremental load
+              detect the same order_id arriving with changed content.
+            data_tests:
+              - not_null
+
+          - name: _loaded_at
+            description: UTC timestamp of the load run that wrote this row.
+            data_tests:
+              - not_null

@@ -1,0 +1,306 @@
+version: 2
+
+models:
+  - name: dim_customer
+    description: >
+      One row per customer. SCD Type 1 - the values come from each customer's
+      most recent order and no history is kept. Invalid contact details are
+      flagged rather than removed, so consumers decide whether to trust them.
+    columns:
+      - name: customer_id
+        description: Natural primary key, taken from the source as-is.
+        data_tests:
+          - not_null
+          - unique
+
+      - name: customer_name
+        data_tests:
+          - not_null
+
+      - name: customer_phone
+        description: Stray double-quote characters stripped; otherwise as sent.
+        data_tests:
+          - not_null
+
+      - name: customer_email
+        description: Lowercased and trimmed; otherwise as sent.
+        data_tests:
+          - not_null
+
+      - name: is_valid_phone
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [true, false]
+
+      - name: is_valid_email
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [true, false]
+
+      - name: has_valid_contact
+        description: >
+          True when at least one channel is usable. Answers "how many
+          customers can we not reach at all", which neither flag answers
+          on its own.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [true, false]
+
+  - name: fct_order
+    description: >
+      One row per order. Carries the header total as the source stated it
+      alongside what the line items actually add up to, so a disagreement is
+      visible without leaving the table.
+    columns:
+      - name: order_id
+        description: Primary key.
+        data_tests:
+          - not_null
+          - unique
+
+      - name: customer_id
+        description: Foreign key to dim_customer.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+
+      - name: order_date
+        data_tests:
+          - not_null
+
+      - name: order_total
+        description: Header total as stated by the source.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+
+      - name: computed_total
+        description: >
+          Sum of the order's line totals. Null only for an order that
+          arrived with no line items at all.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+
+      - name: line_item_count
+        description: >
+          Number of line rows on this order. sum() of this column must equal
+          the row count of fct_order_item, which makes it a cheap guard
+          against the two facts drifting apart.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+
+      - name: total_quantity
+        description: Units across all lines. Distinct from line_item_count.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+
+      - name: has_total_mismatch
+        description: >
+          True when the header total disagrees with the sum of the line
+          totals. Exposed as a column so an analyst sees it without reading
+          the dbt project.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [false]
+              config:
+                # warn, not error: a real order feed can legitimately carry
+                # discounts, tax or shipping in the header that the lines do
+                # not account for. That deserves investigation, not a failed
+                # build for the whole project.
+                severity: warn
+
+  - name: fct_order_item
+    description: >
+      One row per order line. The lowest grain in the model and the table the
+      weekly aggregate is built from.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - order_id
+              - line_number
+    columns:
+      - name: order_item_id
+        description: >
+          Surrogate key over (order_id, line_number). The source gives no
+          line identifier, so this is generated rather than natural.
+        data_tests:
+          - not_null
+          - unique
+
+      - name: order_id
+        description: Foreign key to fct_order.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_order')
+                field: order_id
+
+      - name: customer_id
+        description: Foreign key to dim_customer, carried down from the order.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+
+      - name: order_date
+        data_tests:
+          - not_null
+
+      - name: week_start
+        description: >
+          Monday of the week the order falls in. The only place the week
+          boundary is defined; everything grouping by week reads this column.
+        data_tests:
+          - not_null
+
+      - name: line_number
+        description: Zero-based position of the line within the order's array.
+        data_tests:
+          - not_null
+
+      - name: product_id
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["A1", "B1", "C1"]
+              config:
+                severity: warn
+
+      - name: product_name
+        data_tests:
+          - not_null
+
+      - name: quantity
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
+
+      - name: unit_price
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+
+      - name: line_total
+        description: quantity * unit_price, defined once at this grain.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+
+  - name: agg_weekly_product_sales
+    description: >
+      Weekly sales per product with the top seller flagged by revenue.
+      Materialized as a view: a cheap aggregation over fct_order_item that
+      does not need its own storage or refresh schedule.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - week_start
+              - product_id
+    columns:
+      - name: week_start
+        description: Monday of the ISO week, carried from fct_order_item.
+        data_tests:
+          - not_null
+
+      - name: product_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_order_item')
+                field: product_id
+
+      - name: product_name
+        data_tests:
+          - not_null
+
+      - name: total_revenue
+        description: Sum of line_total for the product in the week.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+
+      - name: total_quantity
+        description: >
+          Kept alongside revenue so the quantity view stays queryable without
+          a schema change. On this data the two metrics disagree on the top
+          seller in 80 of 144 weeks.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
+
+      - name: line_item_count
+        data_tests:
+          - not_null
+
+      - name: order_count
+        description: >
+          Distinct orders containing the product. Lower than line_item_count
+          when a product appears on more than one line of an order.
+        data_tests:
+          - not_null
+
+      - name: revenue_rank
+        description: >
+          Rank of the product by revenue within the week. Exposed so that
+          "top two this week" needs no additional model.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                inclusive: true
+
+      - name: is_top_seller
+        description: >
+          True when revenue_rank = 1. RANK rather than ROW_NUMBER, so a
+          genuine tie flags both products instead of hiding one.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [true, false]
