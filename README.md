@@ -166,6 +166,24 @@ of a thousand rows it is overhead without payoff.
 **3NF** was also considered - correct, but it maps less directly onto the
 aggregation requirement and would not make the analytical intent clearer.
 
+### Two things deliberately left out
+
+**No `dim_product`.** The star has one dimension; `product_id`,
+`product_name` and `unit_price` sit on `fct_order_item`. For `unit_price` that
+is correct - the price on a line is a historical value and belongs to the fact,
+not to a dimension that would overwrite it. For `product_name` it is a
+compromise: it is a pure dimension attribute repeated across 1,674 rows, and
+with three products and a strict 1:1 mapping to `product_id` a dimension table
+would add a join without adding information. With a real product catalogue -
+categories, suppliers, hierarchies - it would earn its place.
+
+**No date spine.** The weekly aggregate contains only weeks that had sales. In
+this extract that costs nothing: 144 weeks span the range and none are missing.
+But a week with no orders simply does not appear, so a report reading the
+aggregate directly would show a gap rather than a zero. `dbt_utils.date_spine`
+joined to a `dim_date` is the standard fix and is the first thing I would add
+for recurring reporting.
+
 ### Two dbt layers, not raw straight to marts
 
 Cleanup logic lives in staging and only in staging. Inlined in the marts it
@@ -180,6 +198,13 @@ mart concept for the same reason.
 multiplication is written in exactly one place. A fact reading another fact is a
 dependency worth accepting: the alternative repeats the expression, and the two
 copies would drift the moment a discount or tax term is added to one of them.
+
+One duplication is left in place knowingly. `stg_customers` reads the source
+directly rather than `stg_orders`, because `stg_orders` does not carry the
+contact columns, so `try_to_date(order_date)` is written in both models. Routing
+customer attributes through a model whose grain is orders would be worse than
+repeating one cast; the alternative is a third staging model that exists only to
+type the shared columns, which is more machinery than the problem deserves.
 
 ### Load: full-snapshot reload
 
@@ -322,8 +347,12 @@ would otherwise wave through. But claiming "referential integrity is verified"
 would overstate it: referential integrity here is *constructed*, and the tests
 document that construction.
 
-Roughly 20 of the 95 are structural in this sense. The remaining 75 can fail on
-new data.
+Counted precisely: **24 of the 95 are structural, and 71 can fail on new
+data.** The 24 are the six `relationships` tests, three
+`unique_combination_of_columns`, six `accepted_values [true, false]` on native
+booleans, three `unique` tests on keys a `QUALIFY` or a surrogate hash already
+guarantees, five `accepted_range` bounds on values that are sums or ranks of
+non-negative inputs, and `assert_order_line_counts_reconcile`.
 
 | Category | Coverage |
 | --- | --- |

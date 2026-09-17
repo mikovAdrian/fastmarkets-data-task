@@ -17,6 +17,7 @@ select
     order_total,
     line_item_count
 
+-- line_item_count arrives as null, not zero: it comes from a LEFT JOIN onto a
+-- grouped count, and a GROUP BY never produces a zero-row group.
 from {{ ref('fct_order') }}
 where line_item_count is null
-   or line_item_count = 0
