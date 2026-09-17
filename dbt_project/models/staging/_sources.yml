@@ -26,6 +26,27 @@ sources:
             data_tests:
               - not_null
 
+          - name: customer_name
+            description: Customer name as sent by the source.
+            data_tests:
+              - not_null
+
+          - name: customer_phone
+            description: >
+              Phone as sent by the source, including the literal double-quote
+              characters its double-escaping bug wraps around most values.
+              Deliberately not cleaned here; stg_customers strips and flags it.
+            data_tests:
+              - not_null
+
+          - name: customer_email
+            description: >
+              Email as sent by the source, in whatever case it arrived and
+              including placeholders such as n/a and invalid-email. Normalised
+              and flagged in stg_customers, never in the raw layer.
+            data_tests:
+              - not_null
+
           - name: order_date
             description: Order date as a string; cast in stg_orders.
             data_tests:

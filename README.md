@@ -6,7 +6,7 @@ lands it in a Snowflake raw layer with the nested `order_items` array stored as
 product sales with a revenue-based top-seller flag.
 
 Verified end to end against a Snowflake trial: 1,000 orders, 1,674 line items,
-1,000 customers, 424 aggregate rows across 144 weeks, 99 dbt tests and 24
+1,000 customers, 424 aggregate rows across 144 weeks, 102 dbt tests and 24
 loader unit tests passing.
 
 ## Stack
@@ -335,11 +335,12 @@ pinned because the reviewer account uses the default.
 
 ## Data quality and testing
 
-99 dbt tests: 7 on the source, 30 on staging, 59 on the marts, plus three
+102 dbt tests: 10 on the source, 30 on staging, 59 on the marts, plus three
 singular tests. All pass, alongside 24 unit tests for the loader.
 
-Every model and all 56 columns carry a description, so `dbt docs generate`
-produces a complete catalogue rather than a skeleton:
+Documentation is complete rather than partial: all 7 models, all 56 model
+columns, all 10 source columns and all 3 singular tests carry descriptions, so
+`dbt docs generate` produces a full catalogue rather than a skeleton:
 
     cd dbt_project
     dbt docs generate
@@ -357,7 +358,7 @@ will not notice tomorrow's regression.
 ### Two kinds of test, and it matters which is which
 
 A test count on its own is close to meaningless, so it is worth being explicit
-about what these 99 tests actually protect.
+about what these 102 tests actually protect.
 
 **Data guards** can fail when the incoming data changes. `not_null` on
 source-derived columns, `unique` on `order_id` at the source, `quantity > 0`,
@@ -383,7 +384,7 @@ would otherwise wave through. But claiming "referential integrity is verified"
 would overstate it: referential integrity here is *constructed*, and the tests
 document that construction.
 
-Counted precisely: **24 of the 99 are structural, and 75 can fail on new
+Counted precisely: **24 of the 102 are structural, and 78 can fail on new
 data.** The 24 are the six `relationships` tests, three
 `unique_combination_of_columns`, six `accepted_values [true, false]` on native
 booleans, three `unique` tests on keys a `QUALIFY` or a surrogate hash already

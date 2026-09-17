@@ -1,0 +1,29 @@
+version: 2
+
+# Singular tests are documented here so `dbt docs` shows what each one guards
+# rather than only its file name. The reasoning behind each is in the .sql file.
+
+data_tests:
+  - name: assert_each_week_has_a_top_seller
+    description: >
+      Every week with sales must flag at least one product as top seller.
+      No column-level test can catch a refactor that leaves the flag false for
+      an entire week, because the output stays structurally valid. Tests for
+      zero rather than exactly one, since a genuine revenue tie correctly
+      produces two top sellers.
+
+  - name: assert_every_order_has_line_items
+    description: >
+      An order arriving with an empty order_items array stays in fct_order but
+      contributes nothing downstream, so its header total disappears from
+      revenue reporting. has_total_mismatch would flag it only at warn
+      severity, which is too quiet for an order with no lines at all.
+      A data guard: it can fail on new input.
+
+  - name: assert_order_line_counts_reconcile
+    description: >
+      fct_order's degenerate measures must agree with the line grain they
+      summarise - line_item_count against the row count of fct_order_item, and
+      the same for quantity and revenue. A structural guard: it cannot fail as
+      the models are built today, because fct_order derives those measures from
+      fct_order_item, and it fails if either fact's grain changes.
