@@ -6,7 +6,7 @@ lands it in a Snowflake raw layer with the nested `order_items` array stored as
 product sales with a revenue-based top-seller flag.
 
 Verified end to end against a Snowflake trial: 1,000 orders, 1,674 line items,
-1,000 customers, 424 aggregate rows across 144 weeks, 95 dbt tests and 24
+1,000 customers, 424 aggregate rows across 144 weeks, 99 dbt tests and 24
 loader unit tests passing.
 
 ## Stack
@@ -15,6 +15,30 @@ loader unit tests passing.
 - snowflake-connector-python
 - dbt-core 1.12 with dbt-snowflake
 - Snowflake
+
+### Why local Python rather than Snowpark or Notebooks
+
+The task allows either. I chose to run Python locally for three reasons.
+
+**It is easier to test.** The loader has 24 unit tests that run against a fake
+HTTP response and a fake Snowflake connection, with no credentials and no
+warehouse. A Snowpark notebook cannot be tested that way: verifying it means
+executing it against a live session.
+
+**It version-controls properly.** A notebook is JSON on disk, so a diff is
+unreadable and a code review is guesswork. A `.py` file diffs line by line,
+which is what made the adversarial review pass described under *Use of AI*
+possible at all.
+
+**It fits the orchestration story.** The script has a plain `main()` entry
+point and takes its configuration from the environment, so it drops into a
+Dagster op or an Airflow task unchanged. A notebook would tie scheduling to
+Snowflake.
+
+What I gave up: Snowpark would push the transformation into the warehouse and
+avoid pulling data through the client process. That matters at the volumes
+described under *Loading at scale* - and there the right answer is `COPY INTO`
+from a stage, not Snowpark.
 
 ## Repository layout
 
@@ -311,8 +335,20 @@ pinned because the reviewer account uses the default.
 
 ## Data quality and testing
 
-95 dbt tests: 7 on the source, 31 on staging, 54 on the marts, plus three
+99 dbt tests: 7 on the source, 30 on staging, 59 on the marts, plus three
 singular tests. All pass, alongside 24 unit tests for the loader.
+
+Every model and all 56 columns carry a description, so `dbt docs generate`
+produces a complete catalogue rather than a skeleton:
+
+    cd dbt_project
+    dbt docs generate
+    dbt docs serve
+
+The generated site is not committed - `target/` is gitignored, because
+generated artefacts in version control go stale the moment a model changes.
+The descriptions that produce it are in `_sources.yml`, `_staging.yml` and
+`_marts.yml`.
 
 Tests cover failure modes that do not occur in this sample, not just the ones
 that do. Production feeds change, and a suite that only encodes today's data
@@ -321,7 +357,7 @@ will not notice tomorrow's regression.
 ### Two kinds of test, and it matters which is which
 
 A test count on its own is close to meaningless, so it is worth being explicit
-about what these 95 tests actually protect.
+about what these 99 tests actually protect.
 
 **Data guards** can fail when the incoming data changes. `not_null` on
 source-derived columns, `unique` on `order_id` at the source, `quantity > 0`,
@@ -347,7 +383,7 @@ would otherwise wave through. But claiming "referential integrity is verified"
 would overstate it: referential integrity here is *constructed*, and the tests
 document that construction.
 
-Counted precisely: **24 of the 95 are structural, and 71 can fail on new
+Counted precisely: **24 of the 99 are structural, and 75 can fail on new
 data.** The 24 are the six `relationships` tests, three
 `unique_combination_of_columns`, six `accepted_values [true, false]` on native
 booleans, three `unique` tests on keys a `QUALIFY` or a surrogate hash already
@@ -436,6 +472,73 @@ myself, then had Claude argue the alternatives, review what I had written, and
 verify the output against numbers I had stated in advance. I wanted to be able
 to defend every line, and that means deciding and typing it.
 
+### The prompts that did the work
+
+**Holding the specification against a sound-sounding argument.**
+
+> "I don't want to deviate from the brief, regardless of whether the things
+> they're asking for are valid for this dataset or not."
+
+I had specified `accepted_values` tests on the boolean flag columns. The
+suggestion was to remove them as empty ceremony, since a native `BOOLEAN`
+cannot hold anything else - technically true. I put them back. A test that
+guards a column's contract still earns its place, and dropping a requirement
+because it is inconvenient for one sample is the wrong instinct.
+
+**Refusing code without a justification.**
+
+> "Why are we dropping it?"
+
+About the transient staging table. The answer exposed a real flaw: the `DROP`
+sat in a `finally` block, so it ran on failure too - destroying the only copy
+of the un-parsed `order_items` strings, which is the one thing that can
+identify which row `PARSE_JSON` rejected. It also undercut the choice of
+`TRANSIENT` over `TEMPORARY`, which exists precisely so the table survives a
+failed session. Three words changed the design.
+
+**Turning the tool against the finished work.**
+
+> "I want a check at every level - business decisions, implementation
+> decisions, implementations, tests. The deepest review you are capable of, as
+> if you had nothing to do with this project and were reading it for the first
+> time."
+
+The most productive prompt I wrote. It surfaced four gaps I had not seen: no
+unit tests for the loader despite the README claiming the logic was verified,
+`quantity * unit_price` written in two models that could drift apart, a
+cross-layer reconciliation the README described but no test performed, and an
+unpinned dbt version in an otherwise strictly pinned project. It also caught a
+false statement in my own README: I had written that roughly 20 of the tests
+were structural, and counting them properly gave 24.
+
+**Demanding proof in the real system, not locally.**
+
+> "We need to be certain the data is there at both phases - phase one with
+> Python and phase two with dbt - and that it actually did that in Snowflake."
+
+I did not want "it passes locally". The run that followed reloaded from the
+source URL and rebuilt every model, then proved the chain rather than asserting
+it: `_loaded_at` written by the Python loader appears unchanged in `fct_order`,
+every object's `last_altered` timestamp falls inside the run window, and
+`order_total`, `line_total` and `total_revenue` each sum to 233,100.00 across
+the three layers.
+
+**Pressing on a confident claim until it broke.**
+
+> "Why?"
+
+About the choice of `\x1f` as the delimiter when hashing a row's business
+columns. The comment in the code implied it prevents collisions. Pressing on it
+established that it does not: a delimiter that can appear inside a value makes
+two different rows hash identically - demonstrated with a comma, where
+`["C1","Ann","Smith,London"]` and `["C1","Ann,Smith","London"]` produce the
+same digest - and `\x1f` is merely very unlikely to occur, not impossible. The
+collision-proof answers are length-prefixing each field or hashing a canonical
+serialization. The code kept `\x1f` as a proportionate choice; this README
+states the limit rather than overclaiming it.
+
+### Judgement calls
+
 **Suggestions I rejected.** Implementing both `write_pandas` and a manual
 `PUT` + `COPY INTO` path - two redundant paths for a thousand-row file signals
 indecision, not thoroughness. Removing `accepted_values` from the boolean flags
@@ -470,6 +573,31 @@ not having it.
 Not everything produced was correct. A password-policy property name and a
 column alias that would have silently created a duplicate column were both
 wrong and caught before they mattered.
+
+### What I did to make the tooling more effective
+
+**I wrote the design down before writing any code.** I put the architecture -
+the modelling approach, the load mechanism, the layering, the definition of
+"top seller" - into a single brief and had it reviewed and criticised before a
+line existed. That document then travelled with every session, so decisions
+already made were not silently relitigated later. Most of the wasted motion I
+have seen with AI tooling comes from the model re-deciding on turn forty
+something that was settled on turn three; a written brief is the cheapest fix.
+
+**I asked it to attack the plan rather than confirm it.** After that review I
+pushed back on specific points to see which arguments held. That is how Data
+Vault came to be rejected on cost rather than on taste, and how the
+full-reload decision survived a challenge I had raised myself.
+
+**I fixed the division of labour and kept it.** I made the decisions and wrote
+every file; the tooling argued alternatives, reviewed what I had written, and
+verified it against numbers I had stated in advance. I asked for code in the
+chat rather than having files generated, because I have to defend this in a
+room.
+
+**I used it as an adversary at the end, not only as a helper.** The
+deepest-review prompt above is the clearest example, and repeating the same
+audit after the fixes were applied is what caught the incorrect test count.
 
 **Snowsight assistant.** Used for the access side rather than modelling: the
 role and grant structure for a least-privilege reviewer account, and the
@@ -542,6 +670,36 @@ turns `_source_row_hash` into the mechanism rather than a monitoring hook:
 That is idempotent, keeps history, and lands only genuinely changed rows;
 `stg_orders` would then select the latest version per `order_id` with
 `QUALIFY ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY _loaded_at DESC) = 1`.
+
+### Performance and cost
+
+Measured in the trial account rather than estimated.
+
+**The whole project cost 0.86 credits** - three days of development with dozens
+of rebuilds, against the 400 a trial provides. Storage is 0.25 MB across all
+eight objects, which rounds to nothing.
+
+**A single end-to-end run** is about 20 seconds of query time on an X-Small
+warehouse. X-Small bills at one credit per hour, charged per second with a
+60-second minimum after each resume, so one run costs roughly **0.017
+credits** - and the 60-second floor, not the work, is what dominates.
+
+| Schedule | Credits per year |
+| --- | --- |
+| Daily | ~6 |
+| Hourly | ~146 |
+
+That 60-second floor is why the warehouse is configured with
+`AUTO_SUSPEND = 60` instead of the 600-second default: ten minutes of paid idle
+after every run would cost an order of magnitude more for identical work. It is
+also why an hourly schedule costs 24 times a daily one while doing the same
+trivial amount of computing - you are paying for resumes, not for compute.
+
+At this size the interesting cost question is not the warehouse at all.
+`write_pandas` moves the whole extract through the client process, so the real
+cost sits in the orchestrator's memory and runtime rather than in Snowflake.
+The stage-based `COPY INTO` approach above moves it back to where it can be
+measured and scaled.
 
 ### Observability
 

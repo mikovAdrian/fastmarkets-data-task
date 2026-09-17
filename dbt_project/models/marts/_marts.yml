@@ -14,6 +14,7 @@ models:
           - unique
 
       - name: customer_name
+        description: Customer name as it arrived, trimmed only.
         data_tests:
           - not_null
 
@@ -28,6 +29,9 @@ models:
           - not_null
 
       - name: is_valid_phone
+        description: >
+          True when the phone matches +<1-3 digits>-<6-10 digits> after the
+          source's stray quote characters are stripped.
         data_tests:
           - not_null
           - accepted_values:
@@ -35,6 +39,9 @@ models:
                 values: [true, false]
 
       - name: is_valid_email
+        description: >
+          True when the email is syntactically valid and not a known
+          placeholder such as n/a or invalid-email.
         data_tests:
           - not_null
           - accepted_values:
@@ -74,6 +81,7 @@ models:
                 field: customer_id
 
       - name: order_date
+        description: Date the order was placed, cast from the source string.
         data_tests:
           - not_null
 
@@ -132,6 +140,21 @@ models:
                 # build for the whole project.
                 severity: warn
 
+      - name: _source_row_hash
+        description: >
+          SHA-256 of the business columns, carried through from the load.
+          Preparation for an incremental load rather than an active control;
+          nothing reads it today.
+        data_tests:
+          - not_null
+
+      - name: _loaded_at
+        description: >
+          UTC timestamp of the load run that produced this row, so any mart
+          row traces back to the extract it came from.
+        data_tests:
+          - not_null
+
   - name: fct_order_item
     description: >
       One row per order line. The lowest grain in the model and the table the
@@ -170,6 +193,7 @@ models:
                 field: customer_id
 
       - name: order_date
+        description: Date of the parent order, carried down to the line grain.
         data_tests:
           - not_null
 
@@ -186,6 +210,7 @@ models:
           - not_null
 
       - name: product_id
+        description: Product identifier as it arrived in the JSON array.
         data_tests:
           - not_null
           - accepted_values:
@@ -195,10 +220,14 @@ models:
                 severity: warn
 
       - name: product_name
+        description: >
+          Product name as it arrived. Denormalised onto the fact rather than
+          held in a product dimension; see the README for why.
         data_tests:
           - not_null
 
       - name: quantity
+        description: Units ordered on this line.
         data_tests:
           - not_null
           - dbt_utils.accepted_range:
@@ -207,6 +236,9 @@ models:
                 inclusive: false
 
       - name: unit_price
+        description: >
+          Price per unit at the time of the order. A historical value, which
+          is why it sits on the fact and not in a dimension.
         data_tests:
           - not_null
           - dbt_utils.accepted_range:
@@ -241,6 +273,7 @@ models:
           - not_null
 
       - name: product_id
+        description: Product the weekly totals belong to.
         data_tests:
           - not_null
           - relationships:
@@ -249,6 +282,9 @@ models:
                 field: product_id
 
       - name: product_name
+        description: >
+          Product name, taken with max() so an inconsistent name in the source
+          cannot split one product into two rows of the grain.
         data_tests:
           - not_null
 
@@ -274,6 +310,10 @@ models:
                 inclusive: false
 
       - name: line_item_count
+        description: >
+          Order lines containing the product in the week. Identical to
+          order_count unless a product appears on two lines of one order,
+          which does not happen in this extract.
         data_tests:
           - not_null
 

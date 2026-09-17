@@ -42,6 +42,19 @@ models:
         data_tests:
           - not_null
 
+      - name: _source_row_hash
+        description: >
+          SHA-256 of the business columns, carried through from the load.
+          Nothing consumes it yet; it is the mechanism an incremental load
+          would use to detect changed content for an unchanged order_id.
+        data_tests:
+          - not_null
+
+      - name: _loaded_at
+        description: UTC timestamp of the load run that wrote the source row.
+        data_tests:
+          - not_null
+
   - name: stg_order_items
     description: >
       One row per line item, produced by flattening stg_orders.order_items.
@@ -117,6 +130,7 @@ models:
           - unique
 
       - name: customer_name
+        description: Customer name as it arrived, trimmed only.
         data_tests:
           - not_null
 
