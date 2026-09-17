@@ -1,0 +1,153 @@
+version: 2
+
+models:
+  - name: stg_orders
+    description: >
+      One row per order header. Typing and trimming only; the order_items
+      array is passed through untouched for stg_order_items to flatten.
+    columns:
+      - name: order_id
+        description: Trimmed order identifier. Primary key.
+        data_tests:
+          - not_null
+          - unique
+
+      - name: customer_id
+        description: Foreign key to stg_customers.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: customer_id
+
+      - name: order_date
+        description: >
+          Order date, cast with try_to_date. A null here means the source
+          sent something that would not parse.
+        data_tests:
+          - not_null
+
+      - name: order_total
+        description: Header total as stated by the source, decimal(12,2).
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+
+      - name: order_items
+        description: VARIANT array of line items, flattened downstream.
+        data_tests:
+          - not_null
+
+  - name: stg_order_items
+    description: >
+      One row per line item, produced by flattening stg_orders.order_items.
+      Grain is (order_id, line_number).
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - order_id
+              - line_number
+    columns:
+      - name: order_id
+        description: Foreign key to stg_orders.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_orders')
+                field: order_id
+
+      - name: line_number
+        description: >
+          Zero-based position of the line within the order's array, taken
+          from LATERAL FLATTEN's INDEX. Half the grain.
+        data_tests:
+          - not_null
+
+      - name: product_id
+        description: Product identifier as it arrived.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["A1", "B1", "C1"]
+              config:
+                # A fourth product is normal business change, not a data
+                # defect, so this warns rather than failing the build.
+                severity: warn
+
+      - name: product_name
+        description: Product name as it arrived, denormalised on the line.
+        data_tests:
+          - not_null
+
+      - name: quantity
+        description: Units ordered on this line.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
+
+      - name: unit_price
+        description: Price per unit on this line, decimal(12,2).
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+
+  - name: stg_customers
+    description: >
+      One row per customer, collapsed from the one-big-table by keeping the
+      values from each customer's most recent order. SCD Type 1 - no history.
+      Invalid contact details are flagged, never removed.
+    columns:
+      - name: customer_id
+        description: Trimmed customer identifier. Primary key.
+        data_tests:
+          - not_null
+          - unique
+
+      - name: customer_name
+        data_tests:
+          - not_null
+
+      - name: customer_phone
+        description: >
+          Phone with the source's stray double-quote characters stripped.
+          Kept as it arrived otherwise, valid or not.
+        data_tests:
+          - not_null
+
+      - name: customer_email
+        description: Lowercased and trimmed. Kept as it arrived otherwise.
+        data_tests:
+          - not_null
+
+      - name: is_valid_phone
+        description: >
+          True when the phone matches +<1-3 digits>-<6-10 digits>. False for
+          placeholders such as N/A, 123456 and the empty string.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [true, false]
+
+      - name: is_valid_email
+        description: >
+          True when the email is syntactically valid and not a known
+          placeholder. False for n/a, invalid-email and the empty string.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [true, false]
