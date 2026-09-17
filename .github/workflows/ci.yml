@@ -1,0 +1,35 @@
+name: CI
+
+# Runs the loader's unit tests. They use a fake HTTP response and a fake
+# Snowflake connection, so no credentials are needed and the workflow is safe
+# to run on a pull request from anywhere.
+#
+# The dbt models are not built here: that needs a live Snowflake account, and
+# putting warehouse credentials in CI for a take-home is not a trade worth
+# making. `dbt build` is run locally and its result is recorded in the README.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  load-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r load/requirements-dev.txt
+
+      - name: Byte-compile the loader
+        run: python -m compileall -q load
+
+      - name: Run unit tests
+        run: pytest load/tests -q

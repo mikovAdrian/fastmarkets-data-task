@@ -1,0 +1,4 @@
+# Development-only dependencies. Runtime deps are in requirements.txt, which is
+# what an orchestrator image would install.
+-r requirements.txt
+pytest==8.4.2

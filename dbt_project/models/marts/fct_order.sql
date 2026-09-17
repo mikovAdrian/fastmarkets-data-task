@@ -5,14 +5,16 @@ with orders as (
 line_totals as (
     select
         order_id,
-        count(*)                   as line_item_count,
-        sum(quantity)              as total_quantity,
+        count(*)        as line_item_count,
+        sum(quantity)   as total_quantity,
 
-        -- line_total is defined here rather than in staging because
-        -- quantity * unit_price is a derived measure, and derived measures
-        -- are business logic. Staging does cleanup and flattening only.
-        sum(quantity * unit_price) as computed_total
-    from {{ ref('stg_order_items') }}
+        -- Reads fct_order_item rather than stg_order_items so that
+        -- quantity * unit_price is written in exactly one place. A fact
+        -- reading another fact is a dependency worth accepting here: the
+        -- alternative repeats the multiplication, and the two copies would
+        -- drift the moment a discount or tax term is added to one of them.
+        sum(line_total) as computed_total
+    from {{ ref('fct_order_item') }}
     group by order_id
 ),
 final as (
