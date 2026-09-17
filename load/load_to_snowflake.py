@@ -231,6 +231,10 @@ def load(conn: snowflake.connector.SnowflakeConnection, df: pd.DataFrame) -> int
             table_name=STAGING_TABLE,
             database=RAW_DATABASE,
             schema=RAW_SCHEMA,
+            # Without this, a tz-aware column is written as naive wall-clock
+            # and Snowflake reinterprets it in the session timezone, shifting
+            # _loaded_at by the offset. Verified against a live account.
+            use_logical_type=True,
         )
         if not success:
             raise RuntimeError("write_pandas failed writing the staging table")
