@@ -5,6 +5,9 @@ lands it in a Snowflake raw layer with the nested `order_items` array stored as
 `VARIANT`. dbt then models it into a Kimball star schema and exposes weekly
 product sales with a revenue-based top-seller flag.
 
+A semantic view over the marts lets the same data be queried in English
+through Cortex Analyst.
+
 Verified end to end against a Snowflake trial: 1,000 orders, 1,674 line items,
 1,000 customers, 424 aggregate rows across 144 weeks, 102 dbt tests and 24
 loader unit tests passing.
@@ -45,6 +48,7 @@ from a stage, not Snowpark.
     load/          Python extract-and-load script and its pinned dependencies
     load/tests/    unit tests for the loader (no credentials, no network)
     dbt_project/   dbt transformation project (staging -> marts)
+    cortex/        natural-language query CLI over the semantic view
     data/          local working directory for the extract (gitignored)
     .github/       CI running the loader's unit tests
 
@@ -137,6 +141,14 @@ need no credentials and no network. They cover the parsing rules, the audit
 columns, the statement ordering inside `load()` and the CLI exit codes. CI runs
 them on every push; the dbt models are not built in CI because that needs live
 warehouse credentials.
+
+### Phase 3 - semantic layer, optional
+
+    cd dbt_project
+    dbt run-operation create_semantic_view
+
+Creates the semantic view Cortex Analyst reads. Not required for the core
+pipeline; see *Semantic and AI layer* below.
 
 ## Data model
 
@@ -672,6 +684,58 @@ That is idempotent, keeps history, and lands only genuinely changed rows;
 `stg_orders` would then select the latest version per `order_id` with
 `QUALIFY ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY _loaded_at DESC) = 1`.
 
+### Semantic and AI layer
+
+`dbt run-operation create_semantic_view` creates
+`SV_ORDER_SALES`, a Snowflake semantic view over the three marts. It declares
+the tables and their primary keys, the relationships between them, the facts,
+the dimensions with synonyms, and five metrics - revenue, quantity, line count,
+order count and customer count. Cortex Analyst then answers questions in
+English against it:
+
+    python cortex/ask.py "which product had the highest revenue?"
+
+    Understood as:  Which product had the highest total revenue over the
+                    entire available time period?
+    TOTAL_REVENUE | PRODUCT_NAME
+    149100.00     | Gadget
+
+    python cortex/ask.py "which product sold the most units?"
+
+    Understood as:  Which product sold the most units over the entire
+                    available time period?
+    TOTAL_QUANTITY | PRODUCT_NAME
+    1016           | Widget
+
+Those two answers are the reason the semantic layer sits on the **marts** and
+not on the raw table. `total_revenue` and `total_quantity` are declared once,
+in the same place the top-seller flag is computed from, so the English question
+and the SQL question cannot drift apart - and asking for "highest revenue"
+versus "most units" returns a different product, exactly as the modelling
+decision above intends.
+
+The metric comments carry that intent into the semantic layer rather than
+leaving it in the README: `total_quantity` is documented as *"deliberately
+separate from revenue: the two metrics disagree on the top seller in 80 of the
+144 weeks"*, which is context Analyst reads when it interprets a question.
+
+**What the restatement is for.** Analyst returns how it understood the question
+before it returns SQL. That restatement is the cheapest thing to verify - it is
+where you see whether "best selling" was read as revenue or units - so
+`cortex/ask.py` prints it above the answer rather than hiding it.
+
+**A trial-account finding.** `SNOWFLAKE.CORTEX.COMPLETE` is rejected on a trial
+with *"AI function COMPLETE is not available for trial accounts"*, so I expected
+Analyst to be unavailable too. It is not: the Analyst REST API works on this
+account. I checked rather than assumed, and the assumption would have been
+wrong.
+
+**Implemented as a dbt macro, not a model.** A dbt model is a `SELECT`; a
+semantic view is a schema object with its own DDL, so there is nothing to
+materialize. Keeping it in `macros/` means it is still version-controlled and
+still derives its schema from the dbt target, instead of living in a loose SQL
+file run by hand against whichever database the operator happened to be in.
+
 ### Performance and cost
 
 Measured in the trial account rather than estimated.
@@ -716,8 +780,14 @@ identifier, user name and a temporary password are sent separately; the
 password must be changed on first sign-in.
 
 The role holds `USAGE` on the warehouse, database and three schemas plus
-`SELECT` on their tables and views - 13 grants, none of which permit writing.
-It cannot insert, update, delete, create or drop anything.
+`SELECT` on their tables, views and the semantic view - 15 grants, none of
+which permit writing. It cannot insert, update, delete, create or drop
+anything.
+
+It is also granted the `SNOWFLAKE.CORTEX_ANALYST_USER` database role, so the
+natural-language layer can be tried from Snowsight rather than only read about.
+That is a deliberate extension beyond read-only data access, and it is the only
+privilege here that is not strictly necessary to inspect the models.
 
 It also holds **future grants** on all three schemas. `dbt build` issues
 `CREATE OR REPLACE`, so each run produces new objects that do not inherit the
