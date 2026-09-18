@@ -9,8 +9,8 @@ A semantic view over the marts lets the same data be queried in English
 through Cortex Analyst.
 
 Verified end to end against a Snowflake trial: 1,000 orders, 1,674 line items,
-1,000 customers, 424 aggregate rows across 144 weeks, 102 dbt tests and 24
-loader unit tests passing.
+1,000 customers, 424 aggregate rows across 144 weeks, 102 dbt tests and 31
+Python unit tests passing.
 
 ## Stack
 
@@ -49,6 +49,7 @@ from a stage, not Snowpark.
     load/tests/    unit tests for the loader (no credentials, no network)
     dbt_project/   dbt transformation project (staging -> marts)
     cortex/        natural-language query CLI over the semantic view
+    cortex/tests/  unit tests for the response parsing
     data/          local working directory for the extract (gitignored)
     .github/       CI running the loader's unit tests
 
@@ -131,16 +132,22 @@ shell metacharacters, or `source` will interpret them.
 same reason the Python dependencies are pinned: a reviewer running this later
 should get the behaviour it was built on.
 
-### Loader unit tests
+### Python unit tests
 
     pip install -r load/requirements-dev.txt
-    pytest load/tests -q
+    pytest load/tests cortex/tests -q
 
-24 tests against a fake HTTP response and a fake Snowflake connection, so they
-need no credentials and no network. They cover the parsing rules, the audit
-columns, the statement ordering inside `load()` and the CLI exit codes. CI runs
-them on every push; the dbt models are not built in CI because that needs live
-warehouse credentials.
+31 tests against a fake HTTP response and a fake Snowflake connection, so they
+need no credentials and no network. 24 cover the loader - the parsing rules,
+the audit columns, the statement ordering inside `load()` and the CLI exit
+codes - and 7 cover how the Cortex Analyst response is parsed, including a
+reply that contains no SQL and the `request_id` comment Analyst appends to
+every statement.
+
+What is deliberately not mocked is the Analyst call itself. Faking an LLM
+service only asserts that the fake returns what it was told to return. CI runs
+these on every push; the dbt models are not built in CI because that needs
+live warehouse credentials.
 
 ### Phase 3 - semantic layer, optional
 
@@ -348,7 +355,7 @@ pinned because the reviewer account uses the default.
 ## Data quality and testing
 
 102 dbt tests: 10 on the source, 30 on staging, 59 on the marts, plus three
-singular tests. All pass, alongside 24 unit tests for the loader.
+singular tests. All pass, alongside 31 Python unit tests.
 
 Documentation is complete rather than partial: all 7 models, all 56 model
 columns, all 10 source columns and all 3 singular tests carry descriptions, so

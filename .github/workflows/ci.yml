@@ -28,8 +28,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r load/requirements-dev.txt
 
-      - name: Byte-compile the loader
-        run: python -m compileall -q load
+      - name: Byte-compile the Python
+        run: python -m compileall -q load cortex
 
       - name: Run unit tests
-        run: pytest load/tests -q
+        run: pytest load/tests cortex/tests -q
